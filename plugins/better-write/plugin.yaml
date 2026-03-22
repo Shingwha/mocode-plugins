@@ -1,0 +1,9 @@
+name: better-write
+version: 1.0.0
+description: Better write tool with logging - replaces default write
+author: mocode
+dependencies: []
+permissions:
+  - tools.write
+replaces_tools:
+  - write

@@ -1,0 +1,13 @@
+# Config (may contain API keys)
+config.json
+
+# Sessions (local data)
+sessions/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Installed plugins registry
+plugins/installed.json
