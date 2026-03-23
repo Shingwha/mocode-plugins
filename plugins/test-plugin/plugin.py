@@ -1,5 +1,8 @@
 """Tool Debug Plugin - Shows tool call details for debugging"""
 
+from rich.console import Console
+from rich.table import Table
+
 from mocode.plugins import (
     Plugin,
     PluginMetadata,
@@ -21,10 +24,10 @@ class ToolBeforeHook(HookBase):
         tool_args = context.data.get("args", {})
 
         # Format output
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"[ToolDebug] TOOL_BEFORE_RUN: {tool_name}")
         print(f"[ToolDebug] Args: {tool_args}")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
         return context
 
@@ -45,12 +48,14 @@ class ToolAfterHook(HookBase):
         command = tool_args.get("command", "") if tool_name == "bash" else ""
 
         # Format output
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"[ToolDebug] TOOL_AFTER_RUN: {tool_name}")
         if command:
             print(f"[ToolDebug] Command: {command}")
-        print(f"[ToolDebug] Result ({len(result)} chars): {result[:300]}{'...' if len(result) > 300 else ''}")
-        print(f"{'='*60}\n")
+        print(
+            f"[ToolDebug] Result ({len(result)} chars): {result[:300]}{'...' if len(result) > 300 else ''}"
+        )
+        print(f"{'=' * 60}\n")
 
         return context
 
@@ -66,16 +71,21 @@ class ToolDebugPlugin(Plugin):
             author="mocode",
         )
 
-    def on_load(self) -> None:
+    async def on_load(self) -> None:
         print("[ToolDebug] Plugin loaded")
 
-    def on_enable(self) -> None:
+    async def on_enable(self) -> None:
+        console = Console()
+        table = Table(title="ToolDebug Plugin Enabled")
+        table.add_column("Status", style="green")
+        table.add_row("Plugin loaded with isolated venv")
+        console.print(table)
         print("[ToolDebug] Plugin enabled - will show tool call details")
 
-    def on_disable(self) -> None:
+    async def on_disable(self) -> None:
         print("[ToolDebug] Plugin disabled")
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         print("[ToolDebug] Plugin unloaded")
 
     def get_hooks(self) -> list[HookBase]:

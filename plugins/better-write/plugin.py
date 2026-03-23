@@ -38,16 +38,16 @@ class BetterWritePlugin(Plugin):
             replaces_tools=["write"],  # Declare tool replacement
         )
 
-    def on_load(self) -> None:
+    async def on_load(self) -> None:
         print("[BetterWrite] Plugin loaded")
 
-    def on_enable(self) -> None:
+    async def on_enable(self) -> None:
         print("[BetterWrite] Plugin enabled - write tool replaced!")
 
-    def on_disable(self) -> None:
+    async def on_disable(self) -> None:
         print("[BetterWrite] Plugin disabled - original write tool restored!")
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         print("[BetterWrite] Plugin unloaded")
 
     def get_tools(self) -> list[Tool]:
