@@ -1,8 +1,0 @@
-name: test-plugin
-version: 1.0.0
-description: Debug plugin - shows tool call details before/after execution
-author: mocode
-dependencies:
-  - rich>=13.0.0
-permissions:
-  - tools.bash
