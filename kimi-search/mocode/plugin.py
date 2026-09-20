@@ -1,15 +1,15 @@
 """Web search and page fetch through Kimi's search API.
 
-Two tools, one provider of facts: `kimi_search` asks the web and returns the
-passages the API ranked relevant (the Pro endpoint — chunks, not whole
-pages); `kimi_fetch` turns a URL into clean Markdown. Both run on the host's
-own `httpx`, so there is no environment to materialise, and the API key
-resolves config-first, environment-second.
+Three layers, one story: `KimiClient` speaks the API — auth, the two
+endpoints, honest errors; `SearchResult` is what a search returns; two thin
+tools render those for the model. The plugin ships its own environment
+(`httpx` via pyproject.toml), so it runs wherever MoCode runs.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -33,90 +33,156 @@ def _api_key(config: dict) -> str:
     )
 
 
-async def _post(config: dict, path: str, payload: dict) -> dict:
-    """One POST, one JSON body — failures come back as ToolError with a cause."""
-    api_key = _api_key(config)
-    if not api_key:
-        raise ToolError(_KEY_HINT)
-    # The API's own timeout_seconds is the search budget; the wire gets a
-    # little headroom on top so httpx never fires first.
-    wire_timeout = int(payload.get("timeout_seconds") or 30) + 10
-    try:
-        async with httpx.AsyncClient(timeout=wire_timeout) as client:
-            response = await client.post(
-                config.get("base_url", DEFAULT_BASE_URL).rstrip("/") + path,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
-    except httpx.TimeoutException as e:
-        raise ToolError(f"kimi-search: request timed out ({e})") from e
-    except httpx.HTTPError as e:
-        raise ToolError(f"kimi-search: request failed ({e})") from e
-    if response.status_code == 401:
-        raise ToolError(f"kimi-search: 401 — the API key was rejected. {_KEY_HINT}")
-    if response.status_code != 200:
-        raise ToolError(
-            f"kimi-search: HTTP {response.status_code} — {response.text[:300]}"
+@dataclass
+class SearchResult:
+    """One hit, as the search API reports it.
+
+    ``passages`` is the model's reading, decided once, here: the snippet
+    plus the chunks that scored highest.
+    """
+
+    title: str = ""
+    url: str = ""
+    site_name: str = ""
+    date: str = ""
+    authority: str = ""  # the API's source-credibility grade, carried for the UI
+    passages: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_payload(cls, item: dict) -> "SearchResult":
+        scored: list[tuple[float, str]] = []
+        for chunk in item.get("chunks") or []:
+            if not isinstance(chunk, dict):
+                continue
+            text = (chunk.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                score = float(chunk.get("score") or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            scored.append((score, text))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        passages = [text for _, text in scored[:3]]
+        snippet = (item.get("snippet") or "").strip()
+        if snippet and snippet not in passages:
+            passages.insert(0, snippet)
+        return cls(
+            title=item.get("title") or "",
+            url=item.get("url") or "",
+            site_name=item.get("site_name") or "",
+            date=item.get("date") or "",
+            authority=str(item.get("authority") or ""),
+            passages=passages,
         )
-    body = response.json()
-    # The API wraps its payload; older shapes did not. Either way, what the
-    # caller wants is the object under "data", or the body itself.
-    return body.get("data", body) if isinstance(body, dict) else body
 
 
-def _results_of(data) -> list[dict]:
-    """The result list, whichever key the API settled on this quarter."""
-    for key in ("search_result", "results", "items"):
-        value = data.get(key) if isinstance(data, dict) else None
-        if isinstance(value, list):
-            return value
-    return data if isinstance(data, list) else []
+_STATUS_GLOSS = {
+    401: f"the API key is missing or invalid — {_KEY_HINT}",
+    403: "the account is not active",
+    404: "the page has no extractable content",
+    429: "rate limited — retry in a moment",
+    504: "timed out — a larger timeout_seconds or a leaner query may help",
+}
 
 
-def _passages(item: dict, limit: int = 3) -> str:
-    """The snippet, plus the highest-scoring chunks — the model's reading."""
-    scored: list[tuple[float, str]] = []
-    for chunk in item.get("chunks") or []:
-        if not isinstance(chunk, dict):
-            continue
-        text = (chunk.get("content") or chunk.get("text") or "").strip()
-        if not text:
-            continue
+def _explain_status(status: int, body: dict) -> str:
+    """HTTP {status}: the API's own words when it sent any, ours otherwise.
+
+    The API reports its errors as ``{"error": {"message": ...}}`` — except
+    401 and account-level 403, which carry no body at all.
+    """
+    message = ((body.get("error") or {}).get("message") or "").strip()
+    if message:
+        return f"HTTP {status} — {message}"
+    gloss = _STATUS_GLOSS.get(status, "")
+    return f"HTTP {status} — {gloss}" if gloss else f"HTTP {status}"
+
+
+class KimiClient:
+    """The search API and nothing else: auth, two endpoints, honest errors."""
+
+    def __init__(self, config: dict) -> None:
+        self._api_key = _api_key(config)
+        self._base_url = config.get("base_url", DEFAULT_BASE_URL).rstrip("/")
+        self._timeout_seconds = min(max(int(config.get("timeout_seconds") or 30), 1), 60)
+
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        sites: tuple = (),
+        time_window: dict | None = None,
+    ) -> list[SearchResult]:
+        payload = {
+            "text_query": query,
+            "limit": min(max(int(limit), 1), 20),
+            "timeout_seconds": self._timeout_seconds,
+        }
+        if sites:
+            payload["sites"] = [str(site) for site in sites][:5]
+        if time_window:
+            payload["time_window"] = time_window
+        body = await self._post("/v1/tools/search_pro", payload)
+        return [
+            SearchResult.from_payload(item)
+            for item in body.get("search_results") or []
+            if isinstance(item, dict)
+        ]
+
+    async def fetch(self, url: str) -> tuple[str, str]:
+        """One page as ``(title, markdown)`` — the request carries the URL alone."""
+        body = await self._post("/v1/tools/fetch", {"url": url})
+        return body.get("title") or "", body.get("markdown") or ""
+
+    async def _post(self, path: str, payload: dict) -> dict:
+        if not self._api_key:
+            raise ToolError(_KEY_HINT)
+        # timeout_seconds caps the search server-side; the wire gets
+        # headroom on top so httpx never fires first.
         try:
-            score = float(chunk.get("score") or 0.0)
-        except (TypeError, ValueError):
-            score = 0.0
-        scored.append((score, text))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    chosen = [text for _, text in scored[:limit]]
-    snippet = (item.get("snippet") or "").strip()
-    if snippet and snippet not in chosen:
-        chosen.insert(0, snippet)
-    return "\n   ".join(chosen)
+            async with httpx.AsyncClient(timeout=self._timeout_seconds + 10) as client:
+                response = await client.post(
+                    self._base_url + path,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json=payload,
+                )
+        except httpx.TimeoutException as e:
+            raise ToolError(f"kimi-search: request timed out ({e})") from e
+        except httpx.HTTPError as e:
+            raise ToolError(f"kimi-search: request failed ({e})") from e
+        if response.status_code == 200:
+            return response.json()
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        raise ToolError(f"kimi-search: {_explain_status(response.status_code, body)}")
 
 
-def _format_search(query: str, results: list[dict]) -> str:
+def _render(query: str, results: list[SearchResult]) -> str:
+    """The model's reading: a numbered list, passages indented under each."""
     if not results:
         return f"No results for: {query}"
     lines = [f"Web search: {query} — {len(results)} result(s)", ""]
-    for i, item in enumerate(results, 1):
-        title = item.get("title") or "(untitled)"
-        meta = " · ".join(
-            part for part in (item.get("site_name"), item.get("date")) if part
+    for i, result in enumerate(results, 1):
+        meta = " · ".join(part for part in (result.site_name, result.date) if part)
+        lines.append(
+            f"{i}. {result.title or '(untitled)'}" + (f" ({meta})" if meta else "")
         )
-        lines.append(f"{i}. {title}" + (f" ({meta})" if meta else ""))
-        if item.get("url"):
-            lines.append(f"   {item['url']}")
-        passages = _passages(item)
-        if passages:
-            lines.append(f"   {passages}")
-    return "\n".join(lines)
+        if result.url:
+            lines.append(f"   {result.url}")
+        for passage in result.passages:
+            lines.append(f"   {passage}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 class KimiSearchTool(Tool):
     """`kimi_search` — ask the web, get the passages that answer."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, client: KimiClient) -> None:
         super().__init__(
             name="kimi_search",
             description=(
@@ -161,46 +227,39 @@ class KimiSearchTool(Tool):
             summary_key="query",
             result_key="result_count",
         )
-        self._config = config
+        self._client = client
 
     async def _run(self, args: dict) -> ToolResult:
-        payload = {
-            "text_query": args["query"],
-            "limit": min(max(int(args.get("limit") or 5), 1), 20),
-            "timeout_seconds": int(self._config.get("timeout_seconds") or 30),
-        }
-        sites = args.get("sites") or []
-        if sites:
-            payload["sites"] = [str(site) for site in sites][:5]
         start = (args.get("time_start") or "").strip()
         end = (args.get("time_end") or "").strip()
-        if start or end:
-            payload["time_window"] = {"start": start, "end": end}
-        data = await _post(self._config, "/v1/tools/search_pro", payload)
-        results = _results_of(data)
-        details = {
-            "result_count": len(results),
-            "results": [
-                {
-                    "title": item.get("title", ""),
-                    "url": item.get("url", ""),
-                    "site_name": item.get("site_name", ""),
-                    "date": item.get("date", ""),
-                    "authority": item.get("authority"),
-                }
-                for item in results
-                if isinstance(item, dict)
-            ],
-        }
+        results = await self._client.search(
+            args["query"],
+            limit=args.get("limit") or 5,
+            sites=args.get("sites") or (),
+            time_window={"start": start, "end": end} if start or end else None,
+        )
         return ToolResult(
-            content=_format_search(args["query"], results), details=details
+            content=_render(args["query"], results),
+            details={
+                "result_count": len(results),
+                "results": [
+                    {
+                        "title": result.title,
+                        "url": result.url,
+                        "site_name": result.site_name,
+                        "date": result.date,
+                        "authority": result.authority,
+                    }
+                    for result in results
+                ],
+            },
         )
 
 
 class KimiFetchTool(Tool):
     """`kimi_fetch` — a URL in, clean Markdown out."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, client: KimiClient) -> None:
         super().__init__(
             name="kimi_fetch",
             description=(
@@ -219,28 +278,19 @@ class KimiFetchTool(Tool):
             summary_key="url",
             result_key="chars",
         )
-        self._config = config
+        self._client = client
 
     async def _run(self, args: dict) -> ToolResult:
         url = (args.get("url") or "").strip()
         if not url.startswith(("http://", "https://")):
             raise ToolError(f"kimi_fetch: not an absolute http(s) URL: {url!r}")
-        data = await _post(
-            self._config,
-            "/v1/tools/fetch",
-            {
-                "url": url,
-                "timeout_seconds": int(self._config.get("timeout_seconds") or 30),
-            },
-        )
-        title = (data.get("title") or "").strip() if isinstance(data, dict) else ""
-        content = ""
-        if isinstance(data, dict):
-            content = (data.get("content") or data.get("markdown") or "").strip()
+        title, content = await self._client.fetch(url)
         if not content:
             raise ToolError(f"kimi_fetch: the page returned no content: {url}")
         body = f"# {title}\n\n{content}" if title else content
-        return ToolResult(content=body, details={"title": title, "url": url, "chars": len(body)})
+        return ToolResult(
+            content=body, details={"title": title, "url": url, "chars": len(body)}
+        )
 
 
 def _guidance(_context: dict) -> str:
@@ -264,11 +314,11 @@ class KimiSearchPlugin(Plugin):
     description = "Web search and page fetch via the Kimi (Moonshot) search API"
 
     def build(self, ctx) -> None:
-        config = ctx.plugin_config("kimi-search")
+        client = KimiClient(ctx.plugin_config("kimi-search"))
         # Registered even without a key: a tool that fails loudly with the fix
         # beats one that silently never appears.
-        ctx.tools.register(KimiSearchTool(config))
-        ctx.tools.register(KimiFetchTool(config))
+        ctx.tools.register(KimiSearchTool(client))
+        ctx.tools.register(KimiFetchTool(client))
         ctx.prompt_sections.append(Section("web", _guidance, priority=40))
 
 

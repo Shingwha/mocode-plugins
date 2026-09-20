@@ -13,7 +13,14 @@ and how to search:
 - **`kimi_fetch`** — one URL in, clean Markdown out (`/v1/tools/fetch`). Use
   it when the search snippets are not enough.
 
-No dependencies of its own — it runs on MoCode's `httpx`.
+No dependencies of the host's — the plugin ships its own environment
+(`httpx`, materialised by `uv`). `mocode plugin install` sets it up in the
+same breath, and `mocode plugin list` shows `own env`. If the import ever
+fails on a missing package, one command fixes it:
+
+```bash
+mocode plugin sync kimi-search
+```
 
 ## Install
 
@@ -51,8 +58,10 @@ the tools still appear; calling one explains exactly what to set.
 
 ## Cost
 
-The search API is billed **per call** (and fetching page content costs more
-than snippets) — see [Kimi's pricing](https://platform.kimi.com/docs/pricing/websearch).
+Billed **only on success**: a search counts when it returns results, a fetch
+when the page yields a non-blank Markdown body — failures and empty results
+are free. See
+[Kimi's pricing](https://platform.kimi.com/docs/pricing/websearch).
 This plugin always searches the Pro endpoint, which returns relevance-ranked
 chunks instead of whole pages, precisely because that is the cheap way for an
 agent to search.
@@ -66,5 +75,5 @@ agent to search.
 
 配置最简单的方式：设置环境变量 `KIMI_API_KEY` 或 `MOONSHOT_API_KEY`；
 或写入 `~/.mocode/config.json` 的 `plugins."kimi-search".api_key`（见上方
-示例）。搜索接口**按次计费**，插件固定使用返回内容片段的专业版接口以
-控制 token 成本。
+示例）。**仅成功返回结果时计费**，失败或无结果不计费；插件固定使用返回
+内容片段的专业版接口以控制 token 成本。

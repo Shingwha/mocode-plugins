@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/v1.json",
   "name": "kimi-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Web search and page fetch via the Kimi (Moonshot) search API",
   "license": "MIT",
   "keywords": ["web", "search", "fetch", "kimi", "moonshot"]

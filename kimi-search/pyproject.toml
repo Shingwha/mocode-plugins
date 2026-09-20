@@ -1,0 +1,8 @@
+[project]
+name = "kimi-search"
+version = "0.1.1"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27"]
+
+[tool.uv]
+package = false        # the plugin is a directory, not an installable package
