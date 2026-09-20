@@ -7,6 +7,7 @@ installed straight from this repository.
 | Plugin | What it adds |
 |---|---|
 | [kimi-search](kimi-search/) | `kimi_search` + `kimi_fetch` — web search and page fetch via the Kimi (Moonshot) search API |
+| [mcp](mcp/) | MCP client — `mcp.json` servers (stdio + Streamable HTTP) as MoCode tools: `mcp__<server>__<tool>`, meta tools and `/mcp` |
 
 ## Installing
 

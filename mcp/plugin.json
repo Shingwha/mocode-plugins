@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/v1.json",
+  "name": "mcp",
+  "version": "0.1.0",
+  "description": "MCP client — serve mcp.json servers (stdio + Streamable HTTP) as MoCode tools",
+  "license": "MIT",
+  "keywords": ["mcp", "model-context-protocol", "tools", "integration"]
+}
